@@ -12,6 +12,16 @@ if [[ "$(uname -r)" =~ ^4\.15\.0-60 ]]; then
   exit 1
 fi
 
+if [[ "$(uname -r)" =~ ^4\.4\. ]]; then
+  if grep -q Ubuntu <<< $(uname -a); then
+    echo "DO NOT RUN mailcow ON THIS UBUNTU KERNEL!"
+    echo "Please update to linux-generic-hwe-16.04 by running \"apt-get install --install-recommends linux-generic-hwe-16.04\""
+    exit 1
+  fi
+  echo "mailcow on a 4.4.x kernel is not supported. It may or may not work, please upgrade your kernel or continue at your own risk."
+  read -p "Press any key to continue..." < /dev/tty
+fi
+
 # Exit on error and pipefail
 set -o pipefail
 
@@ -110,6 +120,9 @@ while (($#)); do
     --ours)
       MERGE_STRATEGY=ours
     ;;
+    --skip-start)
+      SKIP_START=y
+    ;;
     --gc)
       echo -e "\e[32mCollecting garbage...\e[0m"
       docker_garbage
@@ -121,11 +134,12 @@ while (($#)); do
       exit 0
     ;;
     --help|-h)
-    echo './update.sh [-c|--check, --ours, --gc, -h|--help]
+    echo './update.sh [-c|--check, --ours, --gc, --skip-start, -h|--help]
 
   -c|--check   -   Check for updates and exit (exit codes => 0: update available, 3: no updates)
   --ours       -   Use merge strategy "ours" to solve conflicts in favor of non-mailcow code (local changes)
   --gc         -   Run garbage collector to delete old image tags
+  --skip-start -   Do not start mailcow after update
 '
     exit 1
   esac
@@ -150,6 +164,7 @@ CONFIG_ARRAY=(
   "USE_WATCHDOG"
   "WATCHDOG_NOTIFY_EMAIL"
   "WATCHDOG_NOTIFY_BAN"
+  "WATCHDOG_EXTERNAL_CHECKS"
   "SKIP_CLAMD"
   "SKIP_IP_CHECK"
   "ADDITIONAL_SAN"
@@ -298,6 +313,14 @@ for option in ${CONFIG_ARRAY[@]}; do
       echo '# Notify about banned IP. Includes whois lookup.' >> mailcow.conf
       echo "WATCHDOG_NOTIFY_BAN=y" >> mailcow.conf
   fi
+  elif [[ ${option} == "WATCHDOG_EXTERNAL_CHECKS" ]]; then
+    if ! grep -q ${option} mailcow.conf; then
+      echo "Adding new option \"${option}\" to mailcow.conf"
+      echo '# Checks if mailcow is an open relay. Requires a SAL. More checks will follow.' >> mailcow.conf
+      echo '# No data is collected. Opt-in and anonymous.' >> mailcow.conf
+      echo '# Will only work with unmodified mailcow setups.' >> mailcow.conf
+      echo "WATCHDOG_EXTERNAL_CHECKS=n" >> mailcow.conf
+  fi
   elif [[ ${option} == "SOGO_EXPIRE_SESSION" ]]; then
     if ! grep -q ${option} mailcow.conf; then
       echo "Adding new option \"${option}\" to mailcow.conf"
@@ -345,18 +368,26 @@ fi
 
 DIFF_DIRECTORY=update_diffs
 DIFF_FILE=${DIFF_DIRECTORY}/diff_before_update_$(date +"%Y-%m-%d-%H-%M-%S")
-echo -e "\e[32mSaving diff to ${DIFF_FILE}...\e[0m"
-mkdir -p ${DIFF_DIRECTORY}
 mv diff_before_update* ${DIFF_DIRECTORY}/ 2> /dev/null
-git diff --stat > ${DIFF_FILE}
-git diff >> ${DIFF_FILE}
+if ! git diff-index --quiet HEAD; then
+  echo -e "\e[32mSaving diff to ${DIFF_FILE}...\e[0m"
+  mkdir -p ${DIFF_DIRECTORY}
+  git diff --stat > ${DIFF_FILE}
+  git diff >> ${DIFF_FILE}
+fi
 
 echo -e "\e[32mPrefetching images...\e[0m"
 prefetch_images
 
-echo -e "Stopping mailcow... "
+echo -e "\e[32mStopping mailcow...\e[0m"
 sleep 2
+MAILCOW_CONTAINERS=($(docker-compose ps -q))
 docker-compose down
+echo -e "\e[32mChecking for remaining containers...\e[0m"
+sleep 2
+for container in "${MAILCOW_CONTAINERS[@]}"; do
+  docker rm -f "$container" 2> /dev/null
+done
 
 # Silently fixing remote url from andryyy to mailcow
 git remote set-url origin https://github.com/mailcow/mailcow-dockerized
@@ -392,7 +423,7 @@ fi
 
 echo -e "\e[32mFetching new docker-compose version...\e[0m"
 sleep 2
-if [[ ! -z $(which pip) && $(pip list --local | grep -c docker-compose) == 1 ]]; then
+if [[ ! -z $(which pip) && $(pip list --local 2>&1 | grep -v DEPRECATION | grep -c docker-compose) == 1 ]]; then
   true
   #prevent breaking a working docker-compose installed with pip
 elif [[ $(curl -sL -w "%{http_code}" https://www.servercow.de/docker-compose/latest.php -o /dev/null) == "200" ]]; then
@@ -442,9 +473,22 @@ if [ -f data/conf/rspamd/custom/global_from_whitelist.map ]; then
   mv data/conf/rspamd/custom/global_from_whitelist.map data/conf/rspamd/custom/global_smtp_from_whitelist.map
 fi
 
-echo -e "\e[32mStarting mailcow...\e[0m"
-sleep 2
-docker-compose up -d --remove-orphans
+# Fix deprecated metrics.conf
+if [ -f "data/conf/rspamd/local.d/metrics.conf" ]; then
+  if [ ! -z "$(git diff --name-only origin/master data/conf/rspamd/local.d/metrics.conf)" ]; then
+    echo -e "\e[33mWARNING\e[0m - Please migrate your customizations of data/conf/rspamd/local.d/metrics.conf to actions.conf and groups.conf after this update."
+    echo "The deprecated configuration file metrics.conf will be moved to metrics.conf_deprecated after updating mailcow."
+  fi
+  mv data/conf/rspamd/local.d/metrics.conf data/conf/rspamd/local.d/metrics.conf_deprecated
+fi
+
+if [[ ${SKIP_START} == "y" ]]; then
+  echo -e "\e[33mNot starting mailcow, please run \"docker-compose up -d --remove-orphans\" to start mailcow.\e[0m"
+else
+  echo -e "\e[32mStarting mailcow...\e[0m"
+  sleep 2
+  docker-compose up -d --remove-orphans
+fi
 
 echo -e "\e[32mCollecting garbage...\e[0m"
 docker_garbage

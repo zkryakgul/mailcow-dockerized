@@ -1,4 +1,8 @@
 $(document).ready(function() {
+  function validateEmail(email) {
+    var re = /^(([^<>()[\]\\.,;:\s@\"]+(\.[^<>()[\]\\.,;:\s@\"]+)*)|(\".+\"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/;
+    return re.test(email);
+  }
   function is_active(elem) {
     if ($(elem).data('submitted') == '1') {
       return true;
@@ -99,6 +103,14 @@ $(document).ready(function() {
             $(this).removeClass('inputMissingAttr');
           }
         }
+        if ($(this).val() && $(this).attr("type") == 'email') {
+          if (!validateEmail($(this).val())) {
+            invalid = true;
+            $(this).addClass('inputMissingAttr');
+          } else {
+            $(this).removeClass('inputMissingAttr');
+          }
+        }
         if ($(this).attr("max")) {
           if (Number($(this).val()) > Number($(this).attr("max"))) {
             invalid = true;
@@ -191,6 +203,15 @@ $(document).ready(function() {
             $(this).removeClass('inputMissingAttr');
           }
         }
+        if ($(this).attr("type") == 'email') {
+          var emailReg = /^([\w-\.]+@([\w-]+\.)+[\w-]{2,4})?$/;
+          if (!emailReg.test($(this).val())) {
+            invalid = true;
+            $(this).addClass('inputMissingAttr');
+          } else {
+            $(this).removeClass('inputMissingAttr');
+          }
+        }
         if ($(this).attr("max")) {
           if (Number($(this).val()) > Number($(this).attr("max"))) {
             invalid = true;
@@ -237,14 +258,17 @@ $(document).ready(function() {
           });
           if (unset === true) {
             unset = null;
-            $('form').formcache('clear');
-            $('form').formcache('destroy');
-            var i = localStorage.length;
-            while(i--) {
-              var key = localStorage.key(i);
-              if(/formcache/.test(key)) {
-                localStorage.removeItem(key);
-              }  
+            // Keep form data for sync jobs
+            if (id != "add_syncjob") {
+              $('form').formcache('clear');
+              $('form').formcache('destroy');
+              var i = localStorage.length;
+              while(i--) {
+                var key = localStorage.key(i);
+                if(/formcache/.test(key)) {
+                  localStorage.removeItem(key);
+                }  
+              }
             }
           }
           else {
